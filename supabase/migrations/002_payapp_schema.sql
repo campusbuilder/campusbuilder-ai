@@ -57,7 +57,8 @@ CREATE TABLE payapp_change_orders (
   date_approved date,
   funding_source text,
   requires_bot_approval boolean NOT NULL DEFAULT false,
-  created_at timestamptz NOT NULL DEFAULT now()
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (project_id, co_number)
 );
 
 CREATE INDEX idx_payapp_co_project ON payapp_change_orders (project_id);
@@ -108,7 +109,8 @@ CREATE TABLE payapp_applications (
   payment_check_number text,
   notes text,
   created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now()
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (project_id, application_number)
 );
 
 CREATE INDEX idx_payapp_applications_project_num ON payapp_applications (project_id, application_number);
@@ -127,7 +129,8 @@ CREATE TABLE payapp_application_items (
   ) STORED,
   pct_complete float8,
   balance_to_finish numeric,
-  retainage numeric
+  retainage numeric,
+  UNIQUE (application_id, sov_item_id)
 );
 
 CREATE INDEX idx_payapp_app_items_application ON payapp_application_items (application_id);
@@ -177,7 +180,8 @@ CREATE TABLE payapp_sub_applications (
   submitted_at timestamptz,
   approved_at timestamptz,
   paid_at timestamptz,
-  created_at timestamptz NOT NULL DEFAULT now()
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (sub_contract_id, application_number)
 );
 
 CREATE INDEX idx_payapp_sub_apps_contract ON payapp_sub_applications (sub_contract_id);
@@ -193,10 +197,30 @@ CREATE TABLE payapp_sub_app_items (
     work_completed_previous + work_completed_this_period + materials_stored
   ) STORED,
   pct_complete float8,
-  balance_to_finish numeric
+  balance_to_finish numeric,
+  UNIQUE (sub_application_id, sub_sov_item_id)
 );
 
 CREATE INDEX idx_payapp_sub_app_items_app ON payapp_sub_app_items (sub_application_id);
+
+-- ============================================
+-- PAY APP FUND SPLITS (for mixed-funding projects)
+-- ============================================
+-- When project.funding_source = 'mixed', each pay app must break down
+-- current_payment_due by fund source. One row per funding contribution
+-- to a specific pay application.
+
+CREATE TABLE payapp_application_fund_splits (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  application_id uuid NOT NULL REFERENCES payapp_applications ON DELETE CASCADE,
+  fund_name text NOT NULL,            -- e.g. "State appropriation 2025-A", "Harbor Foundation donor fund"
+  fund_type text,                     -- matches funding_source enum values: state_appropriation, auxiliary, donor, federal_grant
+  amount numeric NOT NULL,
+  notes text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_payapp_fund_splits_application ON payapp_application_fund_splits (application_id);
 
 -- ============================================
 -- updated_at TRIGGERS for pay app tables
@@ -223,6 +247,7 @@ ALTER TABLE payapp_sov_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE payapp_change_orders ENABLE ROW LEVEL SECURITY;
 ALTER TABLE payapp_applications ENABLE ROW LEVEL SECURITY;
 ALTER TABLE payapp_application_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE payapp_application_fund_splits ENABLE ROW LEVEL SECURITY;
 ALTER TABLE payapp_sub_contracts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE payapp_sub_sov_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE payapp_sub_applications ENABLE ROW LEVEL SECURITY;
@@ -268,6 +293,18 @@ CREATE POLICY "Users see their pay app items"
   ));
 CREATE POLICY "Members manage pay app items"
   ON payapp_application_items FOR ALL
+  USING (application_id IN (
+    SELECT id FROM payapp_applications WHERE org_id IN (SELECT user_orgs())
+  ));
+
+-- Fund splits: through application
+CREATE POLICY "Users see their fund splits"
+  ON payapp_application_fund_splits FOR SELECT
+  USING (application_id IN (
+    SELECT id FROM payapp_applications WHERE org_id IN (SELECT user_orgs())
+  ));
+CREATE POLICY "Members manage fund splits"
+  ON payapp_application_fund_splits FOR ALL
   USING (application_id IN (
     SELECT id FROM payapp_applications WHERE org_id IN (SELECT user_orgs())
   ));
